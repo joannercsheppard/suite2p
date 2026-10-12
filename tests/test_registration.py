@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 import torch
-from suite2p.registration import bidiphase
+from suite2p.registration import bidiphase, rigid
+from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from suite2p.registration.nonrigid import transform_data
+from suite2p.registration.utils import temporal_smooth
 
 
 def test_positive_bidiphase_shift_shifts_every_other_line():
@@ -75,3 +77,47 @@ def test_transform_data_mps_cpu_consistency():
 
     assert correlation > 0.99, f"Correlation: {correlation}"
     assert max_diff < 2, f"Max diff: {max_diff}"
+
+
+DEVICES = ["cpu"] + (["mps"] if torch.backends.mps.is_available() else []) \
+                  + (["cuda"] if torch.cuda.is_available() else [])
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("nimg, sigma", [(50, 1.0), (50, 2.5), (200, 0.3), (3, 2.0), (1, 1.0)])
+def test_temporal_smooth_torch_matches_numpy(device, nimg, sigma):
+    """Torch path of temporal_smooth matches scipy, incl. movies shorter than the kernel."""
+    data_np = np.random.default_rng(0).standard_normal((nimg, 7, 9)).astype(np.float32)
+
+    expected = temporal_smooth(data_np, sigma)
+    result = temporal_smooth(torch.from_numpy(data_np).to(device), sigma)
+
+    assert isinstance(result, torch.Tensor)
+    assert result.device.type == device
+    assert result.dtype == torch.float32
+    np.testing.assert_allclose(result.cpu().numpy(), expected, atol=1e-5)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_phasecorr_temporal_smoothing_recovers_shift_in_noisy_frames(device):
+    """With smooth_sigma_time > 0, phasecorr runs temporal_smooth on the torch correlation
+    maps and recovers a known shift from frames too noisy to register one at a time."""
+    rng = np.random.default_rng(0)
+    ref = gaussian_filter(rng.standard_normal((128, 128)), 2).astype(np.float32)
+    shift = (3, -5)
+    noise = 8 * ref.std()
+    frames = np.stack([np.roll(ref, shift, axis=(0, 1)) + noise * rng.standard_normal(ref.shape)
+                       for _ in range(50)]).astype(np.float32)
+
+    maskMul, maskOffset, cfRefImg = rigid.compute_masks_ref_smooth_fft(
+        torch.from_numpy(ref), maskSlope=10, smooth_sigma=1.15)
+    args = (torch.from_numpy(frames).to(device), cfRefImg.to(torch.complex64).to(device),
+            maskMul.float().to(device), maskOffset.float().to(device), 0.1)
+
+    def fraction_correct(smooth_sigma_time):
+        ymax, xmax, _, _ = rigid.phasecorr(*args, smooth_sigma_time)
+        return ((ymax.cpu().numpy() == shift[0]) & (xmax.cpu().numpy() == shift[1])).mean()
+
+    # without smoothing some frames are misregistered, so the test is sensitive to smoothing
+    assert fraction_correct(0) < 0.9
+    assert fraction_correct(2.0) == 1.0

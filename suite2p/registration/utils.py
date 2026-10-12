@@ -76,26 +76,58 @@ def spatial_taper(sig, Ly, Lx):
     maskMul = maskY[:,None] * maskX
     return maskMul
 
+def _torch_gaussian_kernel1d(sigma: float, truncate: float = 4.0, device=None) -> torch.Tensor:
+    """ normalized 1D gaussian kernel with radius int(truncate * sigma + 0.5), matching scipy """
+    radius = int(truncate * sigma + 0.5)
+    x = torch.arange(-radius, radius + 1, device=device, dtype=torch.float32)
+    kernel = torch.exp(-0.5 * (x / sigma)**2)
+    return kernel / kernel.sum()
 
-def temporal_smooth(data: np.ndarray, sigma: float) -> np.ndarray:
+
+def _torch_reflect_pad0(data: torch.Tensor, pad: int) -> torch.Tensor:
+    """ pad axis 0 by `pad` on each side with scipy 'reflect' mode (d c b a | a b c d | d c b a) """
+    n = data.shape[0]
+    # half-sample symmetric indices (works even if pad > n)
+    idx = torch.arange(-pad, n + pad, device=data.device) % (2 * n)
+    idx = torch.where(idx >= n, 2 * n - 1 - idx, idx)
+    return data[idx]
+
+
+def _torch_conv1d_axis0(data: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
+    """ 'valid' 1D convolution of every pixel's trace along axis 0 with a symmetric kernel """
+    nt, out_shape = data.shape[0], (data.shape[0] - kernel.numel() + 1, *data.shape[1:])
+    # (nt, Ly, Lx) -> (Ly*Lx, 1, nt) so conv1d runs along time
+    traces = data.float().reshape(nt, -1).T.unsqueeze(1)
+    out = torch.nn.functional.conv1d(traces, kernel.view(1, 1, -1))
+    return out.squeeze(1).T.reshape(out_shape).to(data.dtype)
+
+
+def _torch_gaussian_filter1d_axis0(data: torch.Tensor, sigma: float) -> torch.Tensor:
+    """ torch equivalent of scipy.ndimage.gaussian_filter1d(data, sigma, axis=0) """
+    kernel = _torch_gaussian_kernel1d(sigma, device=data.device)
+    radius = (kernel.numel() - 1) // 2
+    return _torch_conv1d_axis0(_torch_reflect_pad0(data, radius), kernel)
+
+
+def temporal_smooth(data: np.ndarray | torch.Tensor, sigma: float) -> np.ndarray | torch.Tensor:
     """
     Apply 1D Gaussian smoothing along the time (first) axis of a 3D array.
 
-    TODO: convert to torch
-
     Parameters
     ----------
-    data : numpy.ndarray
+    data : numpy.ndarray or torch.Tensor
         Input data of shape (nimg, Ly, Lx) to be smoothed along axis 0.
     sigma : float
         Standard deviation of the Gaussian kernel used for temporal smoothing.
 
     Returns
     -------
-    smoothed_data : numpy.ndarray
+    smoothed_data : numpy.ndarray or torch.Tensor
         Temporally smoothed data of shape (nimg, Ly, Lx).
     """
-    return gaussian_filter1d(data, sigma=sigma, axis=0)
+    if isinstance(data, np.ndarray):
+        return gaussian_filter1d(data, sigma=sigma, axis=0)
+    return _torch_gaussian_filter1d_axis0(data, sigma)
 
 
 def complex_fft2(img):
