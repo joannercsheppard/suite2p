@@ -85,11 +85,11 @@ DEVICES = ["cpu"] + (["mps"] if torch.backends.mps.is_available() else []) \
 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("nimg, sigma", [(50, 1.0), (50, 2.5), (200, 0.3), (3, 2.0), (1, 1.0)])
-def test_temporal_smooth_torch_matches_numpy(device, nimg, sigma):
-    """Torch path of temporal_smooth matches scipy, incl. movies shorter than the kernel."""
+def test_temporal_smooth_matches_scipy(device, nimg, sigma):
+    """temporal_smooth matches scipy gaussian_filter1d, incl. movies shorter than the kernel."""
     data_np = np.random.default_rng(0).standard_normal((nimg, 7, 9)).astype(np.float32)
 
-    expected = temporal_smooth(data_np, sigma)
+    expected = gaussian_filter1d(data_np, sigma=sigma, axis=0)
     result = temporal_smooth(torch.from_numpy(data_np).to(device), sigma)
 
     assert isinstance(result, torch.Tensor)

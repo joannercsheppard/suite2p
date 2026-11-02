@@ -4,7 +4,6 @@ Copyright © 2023 Howard Hughes Medical Institute, Authored by Carsen Stringer a
 import numpy as np
 import cv2 
 from cellpose import transforms
-from scipy.ndimage import gaussian_filter1d
 import torch
 
 try:
@@ -109,24 +108,25 @@ def _torch_gaussian_filter1d_axis0(data: torch.Tensor, sigma: float) -> torch.Te
     return _torch_conv1d_axis0(_torch_reflect_pad0(data, radius), kernel)
 
 
-def temporal_smooth(data: np.ndarray | torch.Tensor, sigma: float) -> np.ndarray | torch.Tensor:
+def temporal_smooth(data: torch.Tensor, sigma: float) -> torch.Tensor:
     """
-    Apply 1D Gaussian smoothing along the time (first) axis of a 3D array.
+    Apply 1D Gaussian smoothing along the time (first) axis of a 3D tensor.
+
+    Matches scipy.ndimage.gaussian_filter1d(data, sigma, axis=0) with its default
+    'reflect' mode and truncate=4.0.
 
     Parameters
     ----------
-    data : numpy.ndarray or torch.Tensor
+    data : torch.Tensor
         Input data of shape (nimg, Ly, Lx) to be smoothed along axis 0.
     sigma : float
         Standard deviation of the Gaussian kernel used for temporal smoothing.
 
     Returns
     -------
-    smoothed_data : numpy.ndarray or torch.Tensor
+    smoothed_data : torch.Tensor
         Temporally smoothed data of shape (nimg, Ly, Lx).
     """
-    if isinstance(data, np.ndarray):
-        return gaussian_filter1d(data, sigma=sigma, axis=0)
     return _torch_gaussian_filter1d_axis0(data, sigma)
 
 
